@@ -1,0 +1,59 @@
+# Multi-stage build for Corporate Credit Intelligence API
+FROM node:18-alpine AS base
+
+# Set working directory
+WORKDIR /app
+
+# Add package files
+COPY package*.json ./
+
+# Install dependencies
+FROM base AS dependencies
+RUN npm ci --only=production && npm cache clean --force
+
+# Development stage
+FROM base AS development
+RUN npm ci
+COPY . .
+EXPOSE 3000
+CMD ["npm", "run", "dev"]
+
+# Production build stage
+FROM base AS build
+RUN npm ci --include=dev
+COPY . .
+RUN npm run build
+
+# Production stage
+FROM node:18-alpine AS production
+
+# Create app user
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S credtech -u 1001
+
+# Set working directory
+WORKDIR /app
+
+# Copy production dependencies
+COPY --from=dependencies --chown=credtech:nodejs /app/node_modules ./node_modules
+COPY --from=build --chown=credtech:nodejs /app/server.js ./
+COPY --from=build --chown=credtech:nodejs /app/package*.json ./
+
+# Create logs directory
+RUN mkdir -p /app/logs && chown -R credtech:nodejs /app/logs
+
+# Install production dependencies
+RUN npm ci --only=production && npm cache clean --force
+
+# Switch to non-root user
+USER credtech
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/api/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+
+# Expose port
+EXPOSE 3000
+
+# Start the application
+CMD ["node", "server.js"]
